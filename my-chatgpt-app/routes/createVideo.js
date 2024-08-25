@@ -29,7 +29,10 @@ router.post('/', async (req, res) => {
     fs.mkdirSync(tempDir);
   }
 
+  const listFile = path.join(tempDir, 'images.txt');
+
   try {
+    // Convert base64 images to files
     const imagePaths = await Promise.all(
       images.map(async (base64Image, index) => {
         const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
@@ -39,16 +42,28 @@ router.post('/', async (req, res) => {
       })
     );
 
-    const ffmpegCommand = ffmpeg();
+    // Create the list file for FFmpeg
+    const fileContent = imagePaths.map(img => `file '${img}'\nduration ${fps}`).join('\n');
+    await writeFile(listFile, fileContent, 'utf8');
 
-    imagePaths.forEach((image) => ffmpegCommand.input(image));
-
-    ffmpegCommand
-      .inputFPS(fps)
-      .outputOptions('-c:v libx264', '-pix_fmt yuv420p')
-      .save(videoFilePath)
+    // Create the ffmpeg command
+    ffmpeg()
+      .input(listFile)                          // Use the list file as input
+      .inputOptions(['-f', 'concat', '-safe', '0'])  // Specify input format
+      .outputOptions([
+        '-vf', 'format=yuv420p',              // Ensure compatibility with most players
+        '-c:v', 'libx264',                    // Use H.264 video codec
+        '-r', '25'                            // Output frame rate
+      ])
       .on('start', (commandLine) => {
         console.log('FFmpeg command:', commandLine);
+      })
+      .on('error', (err, stdout, stderr) => {
+        console.error('Error:', err.message);
+        console.error('ffmpeg stderr:', stderr);
+        if (!res.headersSent) {
+          res.status(500).send('Error creating video');
+        }
       })
       .on('end', async () => {
         console.log('Video content written to file:', videoFileName);
@@ -63,18 +78,14 @@ router.post('/', async (req, res) => {
             try {
               await unlink(videoFilePath);
               await Promise.all(imagePaths.map((imagePath) => unlink(imagePath)));
+              await unlink(listFile);  // Clean up the list file
             } catch (cleanupError) {
               console.error('Cleanup ERROR:', cleanupError);
             }
           }
         });
       })
-      .on('error', (err) => {
-        console.error('FFmpeg ERROR:', err);
-        if (!res.headersSent) {
-          res.status(500).send('Error creating video');
-        }
-      });
+      .save(videoFilePath);
   } catch (err) {
     console.error('Processing ERROR:', err);
     res.status(500).send('Error processing images');
