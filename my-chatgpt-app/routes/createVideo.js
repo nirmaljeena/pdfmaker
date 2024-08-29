@@ -10,10 +10,14 @@ const writeFile = promisify(fs.writeFile);
 const unlink = promisify(fs.unlink);
 
 router.post('/', async (req, res) => {
-  const { images, fps = 1 } = req.body;
+  const { images, fps = 25, audio } = req.body;
 
   if (!Array.isArray(images) || images.length === 0) {
     return res.status(400).send('A non-empty array of base64 image data is required');
+  }
+
+  if (!audio) {
+    return res.status(400).send('Audio data is required');
   }
 
   const outputDir = path.join(__dirname, '..', '..', 'output');
@@ -30,6 +34,7 @@ router.post('/', async (req, res) => {
   }
 
   const listFile = path.join(tempDir, 'images.txt');
+  const audioFilePath = path.join(tempDir, 'audio.mp3');
 
   try {
     // Convert base64 images to files
@@ -42,6 +47,10 @@ router.post('/', async (req, res) => {
       })
     );
 
+    // Convert base64 audio to a file
+    const audioBase64Data = audio.replace(/^data:audio\/\w+;base64,/, '');
+    await writeFile(audioFilePath, audioBase64Data, 'base64');
+
     // Create the list file for FFmpeg
     const fileContent = imagePaths.map(img => `file '${img}'\nduration ${fps}`).join('\n');
     await writeFile(listFile, fileContent, 'utf8');
@@ -50,10 +59,13 @@ router.post('/', async (req, res) => {
     ffmpeg()
       .input(listFile)                          // Use the list file as input
       .inputOptions(['-f', 'concat', '-safe', '0'])  // Specify input format
+      .input(audioFilePath)                    // Add audio input
       .outputOptions([
         '-vf', 'format=yuv420p',              // Ensure compatibility with most players
         '-c:v', 'libx264',                    // Use H.264 video codec
-        '-r', '25'                            // Output frame rate
+        '-r', fps,                            // Output frame rate
+        '-c:a', 'aac',                        // Audio codec
+        '-shortest'                           // Stop when either video or audio ends
       ])
       .on('start', (commandLine) => {
         console.log('FFmpeg command:', commandLine);
@@ -79,6 +91,7 @@ router.post('/', async (req, res) => {
               await unlink(videoFilePath);
               await Promise.all(imagePaths.map((imagePath) => unlink(imagePath)));
               await unlink(listFile);  // Clean up the list file
+              await unlink(audioFilePath);  // Clean up the audio file
             } catch (cleanupError) {
               console.error('Cleanup ERROR:', cleanupError);
             }
